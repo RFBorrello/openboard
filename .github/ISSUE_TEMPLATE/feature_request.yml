@@ -1,0 +1,24 @@
+﻿name: Feature request
+description: Propose a new capability or UX improvement
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow gap should OpenBoard solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the behavior you want
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: CSV compatibility, desktop platform, or UX constraints that matter
