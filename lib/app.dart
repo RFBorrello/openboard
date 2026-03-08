@@ -1,6 +1,5 @@
 ﻿import 'package:flutter/material.dart';
-
-import 'features/board/board_page.dart';
+import 'package:openboard/features/board/board_page.dart';
 
 class OpenBoardApp extends StatelessWidget {
   const OpenBoardApp({super.key});
@@ -55,3 +54,4 @@ class OpenBoardApp extends StatelessWidget {
     );
   }
 }
+

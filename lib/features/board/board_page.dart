@@ -153,17 +153,21 @@ class _BoardPageState extends ConsumerState<BoardPage> {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      for (final column in columns) ...[
+                      for (var index = 0; index < columns.length; index++) ...[
                         SizedBox(
                           width: 320,
                           child: _BoardColumnView(
-                            column: column,
+                            column: columns[index],
+                            columnIndex: index,
+                            totalColumns: columns.length,
                             mapping: mapping,
                             selectedRecordId: state.selectedRecordId,
-                            onCreateCard: () => _createCard(initialStatus: column.name),
-                            onRenameColumn: () => _renameColumn(column.name),
+                            onCreateCard: () => _createCard(initialStatus: columns[index].name),
+                            onMoveLeft: () => controller.moveColumn(columns[index].name, -1),
+                            onMoveRight: () => controller.moveColumn(columns[index].name, 1),
+                            onRenameColumn: () => _renameColumn(columns[index].name),
                             onDropCard: (recordId) {
-                              controller.moveRecord(recordId, column.name);
+                              controller.moveRecord(recordId, columns[index].name);
                             },
                             onOpenRecord: (record) {
                               controller.selectRecord(record.id);
@@ -525,18 +529,26 @@ class _MappingRequiredState extends StatelessWidget {
 class _BoardColumnView extends StatelessWidget {
   const _BoardColumnView({
     required this.column,
+    required this.columnIndex,
+    required this.totalColumns,
     required this.mapping,
     required this.selectedRecordId,
     required this.onCreateCard,
+    required this.onMoveLeft,
+    required this.onMoveRight,
     required this.onRenameColumn,
     required this.onDropCard,
     required this.onOpenRecord,
   });
 
   final BoardColumn column;
+  final int columnIndex;
+  final int totalColumns;
   final CsvColumnMapping mapping;
   final String? selectedRecordId;
   final VoidCallback onCreateCard;
+  final VoidCallback onMoveLeft;
+  final VoidCallback onMoveRight;
   final VoidCallback onRenameColumn;
   final ValueChanged<String> onDropCard;
   final ValueChanged<BoardRecord> onOpenRecord;
@@ -573,6 +585,16 @@ class _BoardColumnView extends StatelessWidget {
                           Text('${column.records.length} cards'),
                         ],
                       ),
+                    ),
+                    IconButton(
+                      onPressed: columnIndex > 0 ? onMoveLeft : null,
+                      icon: const Icon(Icons.arrow_back_outlined),
+                      tooltip: 'Move column left',
+                    ),
+                    IconButton(
+                      onPressed: columnIndex < totalColumns - 1 ? onMoveRight : null,
+                      icon: const Icon(Icons.arrow_forward_outlined),
+                      tooltip: 'Move column right',
                     ),
                     IconButton(
                       onPressed: onCreateCard,
@@ -714,7 +736,4 @@ class _BoardDragData {
   final String recordId;
   final String originColumn;
 }
-
-
-
 

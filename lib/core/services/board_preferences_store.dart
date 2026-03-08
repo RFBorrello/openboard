@@ -12,10 +12,18 @@ final boardPreferencesStoreProvider = Provider<BoardPreferencesStore>((ref) {
 abstract class BoardPreferencesStore {
   Future<CsvColumnMapping?> loadMapping(String filePath, String headerFingerprint);
 
+  Future<List<String>?> loadStatusOrder(String filePath, String headerFingerprint);
+
   Future<void> saveMapping(
     String filePath,
     String headerFingerprint,
     CsvColumnMapping mapping,
+  );
+
+  Future<void> saveStatusOrder(
+    String filePath,
+    String headerFingerprint,
+    List<String> statusOrder,
   );
 
   Future<List<String>> loadRecentFiles();
@@ -44,7 +52,7 @@ class FileBoardPreferencesStore implements BoardPreferencesStore {
     return '$configRoot/openboard/preferences.json';
   }
 
-  String _mappingKey(String filePath, String headerFingerprint) {
+  String _documentKey(String filePath, String headerFingerprint) {
     final raw = utf8.encode('$filePath|$headerFingerprint');
     return base64UrlEncode(raw);
   }
@@ -56,7 +64,7 @@ class FileBoardPreferencesStore implements BoardPreferencesStore {
   ) async {
     final data = await _readData();
     final mappings = data['mappings'] as Map<String, dynamic>? ?? const {};
-    final raw = mappings[_mappingKey(filePath, headerFingerprint)];
+    final raw = mappings[_documentKey(filePath, headerFingerprint)];
     if (raw is! Map<String, dynamic>) {
       return null;
     }
@@ -65,6 +73,29 @@ class FileBoardPreferencesStore implements BoardPreferencesStore {
     } catch (_) {
       return null;
     }
+  }
+
+  @override
+  Future<List<String>?> loadStatusOrder(
+    String filePath,
+    String headerFingerprint,
+  ) async {
+    final data = await _readData();
+    final statusOrders = data['statusOrders'] as Map<String, dynamic>? ?? const {};
+    final raw = statusOrders[_documentKey(filePath, headerFingerprint)];
+    if (raw is! List<dynamic>) {
+      return null;
+    }
+
+    final values = raw
+        .whereType<String>()
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+    if (values.isEmpty) {
+      return null;
+    }
+    return values;
   }
 
   @override
@@ -85,8 +116,31 @@ class FileBoardPreferencesStore implements BoardPreferencesStore {
     final mappings = Map<String, dynamic>.from(
       data['mappings'] as Map<String, dynamic>? ?? const {},
     );
-    mappings[_mappingKey(filePath, headerFingerprint)] = mapping.toJson();
+    mappings[_documentKey(filePath, headerFingerprint)] = mapping.toJson();
     data['mappings'] = mappings;
+    await _writeData(data);
+  }
+
+  @override
+  Future<void> saveStatusOrder(
+    String filePath,
+    String headerFingerprint,
+    List<String> statusOrder,
+  ) async {
+    final normalized = <String>[];
+    for (final value in statusOrder) {
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty && !normalized.contains(trimmed)) {
+        normalized.add(trimmed);
+      }
+    }
+
+    final data = await _readData();
+    final statusOrders = Map<String, dynamic>.from(
+      data['statusOrders'] as Map<String, dynamic>? ?? const {},
+    );
+    statusOrders[_documentKey(filePath, headerFingerprint)] = normalized;
+    data['statusOrders'] = statusOrders;
     await _writeData(data);
   }
 
@@ -121,3 +175,4 @@ class FileBoardPreferencesStore implements BoardPreferencesStore {
     await _storageFile.writeAsString(const JsonEncoder.withIndent('  ').convert(data));
   }
 }
+

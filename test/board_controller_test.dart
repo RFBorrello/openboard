@@ -90,5 +90,44 @@ void main() {
         'Waiting',
       );
     });
+
+    test('reorders status columns and persists the preferred order', () async {
+      final file = await writeTempCsv(
+        'column_order.csv',
+        'Title,Status\n'
+        'Task A,Todo\n'
+        'Task B,In Progress\n'
+        'Task C,Done\n',
+      );
+      addTearDown(() => file.parent.delete(recursive: true));
+
+      final preferences = MemoryBoardPreferencesStore();
+      const service = CsvDocumentService();
+      final controller = BoardController(service, preferences);
+
+      await controller.openFile(file.path);
+
+      expect(
+        controller.buildColumns().map((column) => column.name).toList(),
+        ['Todo', 'In Progress', 'Done'],
+      );
+
+      controller.moveColumn('Done', -1);
+      controller.moveColumn('Done', -1);
+
+      expect(
+        controller.buildColumns().map((column) => column.name).toList(),
+        ['Done', 'Todo', 'In Progress'],
+      );
+
+      final reopenedController = BoardController(service, preferences);
+      await reopenedController.openFile(file.path);
+
+      expect(
+        reopenedController.buildColumns().map((column) => column.name).toList(),
+        ['Done', 'Todo', 'In Progress'],
+      );
+    });
   });
 }
+

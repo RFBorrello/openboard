@@ -1,4 +1,6 @@
-﻿import 'package:flutter_riverpod/flutter_riverpod.dart';
+﻿import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/board_models.dart';
 import '../../core/services/board_preferences_store.dart';
@@ -82,6 +84,10 @@ class BoardController extends StateNotifier<BoardState> {
         filePath,
         document.headerFingerprint,
       );
+      final savedStatusOrder = await _preferences.loadStatusOrder(
+        filePath,
+        document.headerFingerprint,
+      );
       final detectedMapping = CsvColumnMapping.autoDetect(document.headers);
       final resolvedMapping =
           mapping != null && mapping.isValidForHeaders(document.headers)
@@ -92,7 +98,11 @@ class BoardController extends StateNotifier<BoardState> {
         keepExistingMapping: false,
         statusOrder: resolvedMapping == null
             ? const []
-            : _csvService.deriveStatusOrder(document.records, resolvedMapping),
+            : _csvService.deriveStatusOrder(
+                document.records,
+                resolvedMapping,
+                preferredOrder: savedStatusOrder ?? const [],
+              ),
       );
       await _preferences.saveRecentFile(filePath);
       final recentFiles = await _preferences.loadRecentFiles();
@@ -123,16 +133,28 @@ class BoardController extends StateNotifier<BoardState> {
       return;
     }
 
+    final nextStatusOrder = _csvService.deriveStatusOrder(
+      document.records,
+      mapping,
+      preferredOrder: document.statusOrder,
+    );
+
     await _preferences.saveMapping(
       document.filePath,
       document.headerFingerprint,
       mapping,
     );
+    await _preferences.saveStatusOrder(
+      document.filePath,
+      document.headerFingerprint,
+      nextStatusOrder,
+    );
+
     state = state.copyWith(
       document: document.copyWith(
         mapping: mapping,
         keepExistingMapping: false,
-        statusOrder: _csvService.deriveStatusOrder(document.records, mapping),
+        statusOrder: nextStatusOrder,
       ),
       clearError: true,
     );
@@ -219,15 +241,17 @@ class BoardController extends StateNotifier<BoardState> {
       preferredOrder: [...document.statusOrder, targetStatus],
     );
 
+    final nextDocument = document.copyWith(
+      records: nextRecords,
+      dirty: true,
+      clearLastSavedAt: true,
+      statusOrder: nextStatuses,
+    );
     state = state.copyWith(
-      document: document.copyWith(
-        records: nextRecords,
-        dirty: true,
-        clearLastSavedAt: true,
-        statusOrder: nextStatuses,
-      ),
+      document: nextDocument,
       selectedRecordId: recordId,
     );
+    _persistStatusOrder(nextDocument, nextStatuses);
     return recordId;
   }
 
@@ -248,13 +272,13 @@ class BoardController extends StateNotifier<BoardState> {
       mapping,
       preferredOrder: [...document.statusOrder, trimmed],
     );
-    state = state.copyWith(
-      document: document.copyWith(
-        dirty: true,
-        clearLastSavedAt: true,
-        statusOrder: nextStatuses,
-      ),
+    final nextDocument = document.copyWith(
+      dirty: true,
+      clearLastSavedAt: true,
+      statusOrder: nextStatuses,
     );
+    state = state.copyWith(document: nextDocument);
+    _persistStatusOrder(nextDocument, nextStatuses);
   }
 
   void renameColumn(String previousName, String nextName) {
@@ -291,14 +315,14 @@ class BoardController extends StateNotifier<BoardState> {
       ],
     );
 
-    state = state.copyWith(
-      document: document.copyWith(
-        records: nextRecords,
-        dirty: true,
-        clearLastSavedAt: true,
-        statusOrder: nextStatuses,
-      ),
+    final nextDocument = document.copyWith(
+      records: nextRecords,
+      dirty: true,
+      clearLastSavedAt: true,
+      statusOrder: nextStatuses,
     );
+    state = state.copyWith(document: nextDocument);
+    _persistStatusOrder(nextDocument, nextStatuses);
   }
 
   void applyRecordValues(String recordId, Map<String, String> values) {
@@ -326,14 +350,14 @@ class BoardController extends StateNotifier<BoardState> {
       preferredOrder: document.statusOrder,
     );
 
-    state = state.copyWith(
-      document: document.copyWith(
-        records: nextRecords,
-        dirty: true,
-        clearLastSavedAt: true,
-        statusOrder: nextStatuses,
-      ),
+    final nextDocument = document.copyWith(
+      records: nextRecords,
+      dirty: true,
+      clearLastSavedAt: true,
+      statusOrder: nextStatuses,
     );
+    state = state.copyWith(document: nextDocument);
+    _persistStatusOrder(nextDocument, nextStatuses);
   }
 
   void moveRecord(String recordId, String status) {
@@ -362,14 +386,46 @@ class BoardController extends StateNotifier<BoardState> {
       preferredOrder: [...document.statusOrder, trimmed],
     );
 
-    state = state.copyWith(
-      document: document.copyWith(
-        records: nextRecords,
-        dirty: true,
-        clearLastSavedAt: true,
-        statusOrder: nextStatuses,
-      ),
+    final nextDocument = document.copyWith(
+      records: nextRecords,
+      dirty: true,
+      clearLastSavedAt: true,
+      statusOrder: nextStatuses,
     );
+    state = state.copyWith(document: nextDocument);
+    _persistStatusOrder(nextDocument, nextStatuses);
+  }
+
+  void moveColumn(String columnName, int delta) {
+    final document = state.document;
+    final mapping = document?.mapping;
+    if (document == null || mapping == null || delta == 0) {
+      return;
+    }
+
+    final nextStatuses = _csvService
+        .deriveStatusOrder(
+          document.records,
+          mapping,
+          preferredOrder: document.statusOrder,
+        )
+        .toList(growable: true);
+    final currentIndex = nextStatuses.indexOf(columnName);
+    if (currentIndex < 0) {
+      return;
+    }
+
+    final targetIndex = (currentIndex + delta).clamp(0, nextStatuses.length - 1);
+    if (targetIndex == currentIndex) {
+      return;
+    }
+
+    final moved = nextStatuses.removeAt(currentIndex);
+    nextStatuses.insert(targetIndex, moved);
+
+    final nextDocument = document.copyWith(statusOrder: nextStatuses);
+    state = state.copyWith(document: nextDocument);
+    _persistStatusOrder(nextDocument, nextStatuses);
   }
 
   void selectRecord(String? recordId) {
@@ -420,4 +476,15 @@ class BoardController extends StateNotifier<BoardState> {
       (value) => value.toLowerCase().contains(filter),
     );
   }
+
+  void _persistStatusOrder(BoardDocument document, List<String> statusOrder) {
+    unawaited(
+      _preferences.saveStatusOrder(
+        document.filePath,
+        document.headerFingerprint,
+        statusOrder,
+      ),
+    );
+  }
 }
+
