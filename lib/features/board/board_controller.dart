@@ -82,10 +82,11 @@ class BoardController extends StateNotifier<BoardState> {
         filePath,
         document.headerFingerprint,
       );
+      final detectedMapping = CsvColumnMapping.autoDetect(document.headers);
       final resolvedMapping =
           mapping != null && mapping.isValidForHeaders(document.headers)
               ? mapping
-              : null;
+              : detectedMapping;
       final hydrated = document.copyWith(
         mapping: resolvedMapping,
         keepExistingMapping: false,

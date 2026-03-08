@@ -1,12 +1,12 @@
 ﻿# OpenBoard
 
-OpenBoard is a native Flutter desktop app that turns CSV rows into a kanban board. It is built for local planning workflows: load a CSV, map the columns that matter, drag cards across status lanes, edit row details, and save back to the same file without losing unmapped columns.
+OpenBoard is a native Flutter desktop app that turns CSV rows into a kanban board. It is built for local planning workflows: load a CSV, auto-detect common board fields when possible, map the remaining columns that matter, drag cards across status lanes, edit row details, and save back to the same file without losing unmapped columns.
 
 ## Current MVP
 
 - Desktop targets: Windows, macOS, Linux
 - Local-only workflow with no cloud sync or database
-- CSV header mapping for title, status, description, assignee, due date, and extra visible fields
+- CSV header mapping for title, status, description, assignee, due date, and extra visible fields, with auto-detect on recognizable headers
 - Drag-and-drop board columns driven by a mapped status field
 - Full-row editing in a detail panel or dialog
 - Safe in-place CSV saves using a temp-file replacement flow
@@ -54,3 +54,4 @@ flutter build macos
 ## Contributing
 
 Open an issue before larger behavior changes so the CSV model and UX stay coherent. Small fixes and test improvements can go straight to PRs.
+

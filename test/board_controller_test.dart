@@ -7,6 +7,43 @@ import 'test_helpers.dart';
 
 void main() {
   group('BoardController', () {
+    test('auto-detects common CSV field names', () {
+      final mapping = CsvColumnMapping.autoDetect([
+        'Task Name',
+        'Workflow State',
+        'Details',
+        'Owner',
+        'Deadline',
+      ]);
+
+      expect(mapping, isNotNull);
+      expect(mapping!.titleColumn, 'Task Name');
+      expect(mapping.statusColumn, 'Workflow State');
+      expect(mapping.descriptionColumn, 'Details');
+      expect(mapping.assigneeColumn, 'Owner');
+      expect(mapping.dueDateColumn, 'Deadline');
+    });
+
+    test('applies auto-detected mapping on file open', () async {
+      final file = await writeTempCsv(
+        'auto_detect.csv',
+        'Task Name,Workflow State,Details,Owner\n'
+        'Task A,Todo,First,Alice\n',
+      );
+      addTearDown(() => file.parent.delete(recursive: true));
+
+      final controller = BoardController(
+        const CsvDocumentService(),
+        MemoryBoardPreferencesStore(),
+      );
+
+      await controller.openFile(file.path);
+
+      expect(controller.state.document?.mapping, isNotNull);
+      expect(controller.state.document?.mapping?.titleColumn, 'Task Name');
+      expect(controller.state.document?.mapping?.statusColumn, 'Workflow State');
+    });
+
     test('maps, edits, moves, and saves board data', () async {
       final file = await writeTempCsv(
         'controller.csv',

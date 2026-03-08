@@ -30,12 +30,13 @@ class _MappingDialogState extends State<MappingDialog> {
   @override
   void initState() {
     super.initState();
-    _titleColumn = widget.initialMapping?.titleColumn ?? widget.headers.first;
-    _statusColumn = widget.initialMapping?.statusColumn ??
+    final detectedMapping = widget.initialMapping ?? CsvColumnMapping.autoDetect(widget.headers);
+    _titleColumn = detectedMapping?.titleColumn ?? widget.headers.first;
+    _statusColumn = detectedMapping?.statusColumn ??
         (widget.headers.length > 1 ? widget.headers[1] : widget.headers.first);
-    _descriptionColumn = widget.initialMapping?.descriptionColumn;
-    _assigneeColumn = widget.initialMapping?.assigneeColumn;
-    _dueDateColumn = widget.initialMapping?.dueDateColumn;
+    _descriptionColumn = detectedMapping?.descriptionColumn;
+    _assigneeColumn = detectedMapping?.assigneeColumn;
+    _dueDateColumn = detectedMapping?.dueDateColumn;
     _extraVisibleColumns = {
       ...widget.initialMapping?.extraVisibleColumns ?? const <String>[],
     };
@@ -54,6 +55,11 @@ class _MappingDialogState extends State<MappingDialog> {
             children: [
               const Text(
                 'Choose which CSV columns drive the board and which extra fields should stay visible on cards.',
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Auto-detected matches are prefilled when the headers are recognizable.',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 16),
               _buildDropdown(
@@ -192,4 +198,3 @@ class _MappingDialogState extends State<MappingDialog> {
     Navigator.of(context).pop(mapping);
   }
 }
-

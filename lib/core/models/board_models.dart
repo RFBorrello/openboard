@@ -15,6 +15,134 @@
   final String? dueDateColumn;
   final List<String> extraVisibleColumns;
 
+  static CsvColumnMapping? autoDetect(List<String> headers) {
+    if (headers.length < 2) {
+      return null;
+    }
+
+    final status = _bestHeader(headers, const [
+      'status',
+      'state',
+      'stage',
+      'column',
+      'lane',
+      'workflow',
+      'phase',
+    ]);
+    if (status == null) {
+      return null;
+    }
+
+    final title = _bestHeader(
+          headers,
+          const [
+            'title',
+            'task',
+            'name',
+            'summary',
+            'subject',
+            'item',
+            'card',
+          ],
+          exclude: {status},
+        ) ??
+        headers.firstWhere(
+          (header) => header != status,
+          orElse: () => status,
+        );
+    if (title == status) {
+      return null;
+    }
+
+    final description = _bestHeader(
+      headers,
+      const ['description', 'details', 'detail', 'notes', 'body'],
+      exclude: {status, title},
+    );
+
+    final assigneeExclude = <String>{status, title};
+    if (description != null) {
+      assigneeExclude.add(description);
+    }
+    final assignee = _bestHeader(
+      headers,
+      const ['assignee', 'assigned', 'owner', 'responsible', 'person'],
+      exclude: assigneeExclude,
+    );
+
+    final dueDateExclude = <String>{status, title};
+    if (description != null) {
+      dueDateExclude.add(description);
+    }
+    if (assignee != null) {
+      dueDateExclude.add(assignee);
+    }
+    final dueDate = _bestHeader(
+      headers,
+      const ['due date', 'due', 'deadline', 'target date', 'eta'],
+      exclude: dueDateExclude,
+    );
+
+    return CsvColumnMapping(
+      titleColumn: title,
+      statusColumn: status,
+      descriptionColumn: description,
+      assigneeColumn: assignee,
+      dueDateColumn: dueDate,
+    );
+  }
+
+  static String? _bestHeader(
+    List<String> headers,
+    List<String> keywords, {
+    Set<String> exclude = const {},
+  }) {
+    var bestScore = 0;
+    String? bestHeader;
+
+    for (final header in headers) {
+      if (exclude.contains(header)) {
+        continue;
+      }
+      final normalized = _normalizeHeader(header);
+      for (final keyword in keywords) {
+        final normalizedKeyword = _normalizeHeader(keyword);
+        final score = _keywordScore(normalized, normalizedKeyword);
+        if (score > bestScore) {
+          bestScore = score;
+          bestHeader = header;
+        }
+      }
+    }
+
+    return bestScore >= 60 ? bestHeader : null;
+  }
+
+  static int _keywordScore(String header, String keyword) {
+    if (header == keyword) {
+      return 100;
+    }
+    if (header.replaceAll(' ', '') == keyword.replaceAll(' ', '')) {
+      return 95;
+    }
+    if (header.startsWith('$keyword ') ||
+        header.endsWith(' $keyword') ||
+        header.contains(' $keyword ')) {
+      return 85;
+    }
+    if (header.contains(keyword)) {
+      return 60;
+    }
+    return 0;
+  }
+
+  static String _normalizeHeader(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .trim();
+  }
+
   Set<String> get mappedColumns => <String>{
     titleColumn,
     statusColumn,
