@@ -23,12 +23,15 @@ This initial open-source build keeps dependencies minimal and uses a file-path d
 - Quoted commas and embedded newlines are supported
 - Unknown or unmapped columns are preserved when saving
 
-## Screenshots
+## Install And Run
 
-- TODO: add board screenshot
-- TODO: add mapping dialog screenshot
+On Windows, you can launch OpenBoard by double-clicking [OpenBoard.bat](/C:/Users/RFBor/Documents/Codex/csv-kanban/OpenBoard.bat).
 
-## Local Development
+What the launcher does:
+- If a built Windows executable already exists, it opens it immediately.
+- If the executable does not exist yet, it runs `flutter build windows` and then opens the app.
+
+Developer setup commands:
 
 ```bash
 flutter pub get
@@ -37,13 +40,18 @@ flutter test
 flutter run -d windows
 ```
 
-For release-style smoke builds:
+Release-style build commands:
 
 ```bash
 flutter build windows
 flutter build linux
 flutter build macos
 ```
+
+## Screenshots
+
+- TODO: add board screenshot
+- TODO: add mapping dialog screenshot
 
 ## Repository Workflow
 
@@ -54,4 +62,3 @@ flutter build macos
 ## Contributing
 
 Open an issue before larger behavior changes so the CSV model and UX stay coherent. Small fixes and test improvements can go straight to PRs.
-
