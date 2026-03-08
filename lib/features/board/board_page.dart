@@ -2,6 +2,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/models/board_models.dart';
+import '../../core/services/csv_file_picker_service.dart';
 import 'board_controller.dart';
 import 'widgets/column_name_dialog.dart';
 import 'widgets/csv_path_dialog.dart';
@@ -285,10 +286,16 @@ class _BoardPageState extends ConsumerState<BoardPage> {
   }
 
   Future<void> _pickCsv() async {
-    final path = await showDialog<String>(
-      context: context,
-      builder: (context) => const CsvPathDialog(),
-    );
+    final pickerResult = await ref.read(csvFilePickerServiceProvider).pickCsvPath();
+    if (!mounted) {
+      return;
+    }
+    final path = pickerResult.launchedPicker
+        ? pickerResult.path
+        : await showDialog<String>(
+            context: context,
+            builder: (context) => const CsvPathDialog(),
+          );
     if (path == null || path.isEmpty) {
       return;
     }
@@ -433,7 +440,7 @@ class _EmptyBoardState extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Open CSV accepts a full local file path in this build so the app stays dependency-light and fully open source.',
+                  'Open CSV now opens a native file browser when the platform supports it, with manual path entry kept as a fallback.',
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
@@ -707,4 +714,7 @@ class _BoardDragData {
   final String recordId;
   final String originColumn;
 }
+
+
+
 
