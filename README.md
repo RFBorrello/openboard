@@ -14,7 +14,7 @@ OpenBoard is a native Flutter desktop app that turns CSV rows into a kanban boar
 
 ## Open CSV
 
-Open CSV now launches a native file browser on supported desktop platforms. If a native picker is unavailable, OpenBoard falls back to manual path entry.
+Open CSV now launches a native file browser on supported desktop platforms. On Windows it uses the app's native file dialog, and if a native picker is unavailable on any platform, OpenBoard falls back to manual path entry.
 
 ## CSV Expectations
 
@@ -62,4 +62,5 @@ flutter build macos
 ## Contributing
 
 Open an issue before larger behavior changes so the CSV model and UX stay coherent. Small fixes and test improvements can go straight to PRs.
+
 

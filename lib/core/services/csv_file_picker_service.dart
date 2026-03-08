@@ -1,5 +1,6 @@
 ﻿import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 final csvFilePickerServiceProvider = Provider<CsvFilePickerService>((ref) {
@@ -16,6 +17,9 @@ class CsvFilePickResult {
 class CsvFilePickerService {
   const CsvFilePickerService();
 
+  static const MethodChannel _windowsChannel =
+      MethodChannel('openboard/file_picker');
+
   Future<CsvFilePickResult> pickCsvPath() async {
     if (Platform.isWindows) {
       return _pickWindows();
@@ -30,36 +34,18 @@ class CsvFilePickerService {
   }
 
   Future<CsvFilePickResult> _pickWindows() async {
-    const script = r'''
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = 'Open CSV'
-$dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
-$dialog.Multiselect = $false
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  Write-Output $dialog.FileName
-}
-''';
-
-    final result = await Process.run('powershell', [
-      '-NoProfile',
-      '-STA',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      script,
-    ]);
-
-    if (result.exitCode != 0) {
+    try {
+      final path = await _windowsChannel.invokeMethod<String>('pickCsvFile');
+      final trimmed = path?.trim();
+      return CsvFilePickResult(
+        launchedPicker: true,
+        path: trimmed == null || trimmed.isEmpty ? null : trimmed,
+      );
+    } on MissingPluginException {
+      return const CsvFilePickResult(launchedPicker: false);
+    } on PlatformException {
       return const CsvFilePickResult(launchedPicker: false);
     }
-
-    final path = (result.stdout as String).trim();
-    return CsvFilePickResult(
-      launchedPicker: true,
-      path: path.isEmpty ? null : path,
-    );
   }
 
   Future<CsvFilePickResult> _pickMacOs() async {
