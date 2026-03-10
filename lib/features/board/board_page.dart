@@ -30,6 +30,14 @@ class _BoardPageState extends ConsumerState<BoardPage> {
         ref.read(boardControllerProvider.notifier).clearError();
       }
 
+      final syncMessage = next.syncMessage;
+      if (syncMessage != null && syncMessage != previous?.syncMessage) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(syncMessage)));
+        ref.read(boardControllerProvider.notifier).clearSyncMessage();
+      }
+
       final document = next.document;
       if (document != null &&
           document.mapping == null &&
@@ -47,8 +55,8 @@ class _BoardPageState extends ConsumerState<BoardPage> {
     final document = state.document;
     final canSave = document != null &&
         document.mapping != null &&
-        document.dirty &&
-        !state.isSaving;
+        !state.isSaving &&
+        (document.dirty || state.syncStatus == BoardSyncStatus.error);
 
     return Scaffold(
       appBar: AppBar(
@@ -62,13 +70,17 @@ class _BoardPageState extends ConsumerState<BoardPage> {
             ),
             Text(
               document == null
-                  ? 'Turn CSV rows into a local kanban board.'
-                  : '${document.fileName}${document.dirty ? ' • Unsaved' : ''}',
+                  ? 'Turn CSV rows into a live local kanban board.'
+                  : '${document.fileName} • Live sync on',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ],
         ),
         actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Center(child: _SyncStatusPill(status: state.syncStatus)),
+          ),
           TextButton.icon(
             onPressed: _pickCsv,
             icon: const Icon(Icons.folder_open_outlined),
@@ -92,8 +104,14 @@ class _BoardPageState extends ConsumerState<BoardPage> {
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.save_outlined),
-              label: const Text('Save'),
+                  : Icon(
+                      state.syncStatus == BoardSyncStatus.error
+                          ? Icons.refresh_outlined
+                          : Icons.save_outlined,
+                    ),
+              label: Text(
+                state.syncStatus == BoardSyncStatus.error ? 'Retry Save' : 'Save Now',
+              ),
             ),
           ),
         ],
@@ -223,14 +241,17 @@ class _BoardPageState extends ConsumerState<BoardPage> {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Row(
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Text(
                 '${document.records.length} row${document.records.length == 1 ? '' : 's'} loaded',
               ),
-              const SizedBox(width: 16),
+              Text(_syncDetailText(state)),
               if (document.lastSavedAt != null)
-                Text('Last saved ${_formatTimestamp(document.lastSavedAt!)}'),
+                Text('Last local save ${_formatTimestamp(document.lastSavedAt!)}'),
             ],
           ),
         ),
@@ -260,6 +281,7 @@ class _BoardPageState extends ConsumerState<BoardPage> {
                                     headers: document.headers,
                                     initialValues: selectedRecord.values,
                                     mapping: mapping,
+                                    submitLabel: 'Apply changes',
                                     onSubmit: (values) {
                                       controller.applyRecordValues(selectedRecord.id, values);
                                     },
@@ -405,6 +427,21 @@ class _BoardPageState extends ConsumerState<BoardPage> {
     final suffix = timestamp.hour >= 12 ? 'PM' : 'AM';
     return '$hour:$minute $suffix';
   }
+
+  String _syncDetailText(BoardState state) {
+    switch (state.syncStatus) {
+      case BoardSyncStatus.idle:
+        return 'Live sync is watching for CSV updates.';
+      case BoardSyncStatus.saving:
+        return 'Saving board changes to the CSV...';
+      case BoardSyncStatus.reloading:
+        return 'Reloading the CSV from disk...';
+      case BoardSyncStatus.externalUpdate:
+        return 'The CSV changed outside OpenBoard.';
+      case BoardSyncStatus.error:
+        return 'Live sync hit an error. Retry save or wait for the next file update.';
+    }
+  }
 }
 
 class _EmptyBoardState extends StatelessWidget {
@@ -444,7 +481,7 @@ class _EmptyBoardState extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Open CSV now opens a native file browser when the platform supports it, with manual path entry kept as a fallback.',
+                  'OpenBoard now watches the CSV for outside edits and writes its own committed changes back automatically.',
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
@@ -519,6 +556,42 @@ class _MappingRequiredState extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SyncStatusPill extends StatelessWidget {
+  const _SyncStatusPill({required this.status});
+
+  final BoardSyncStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (label, background, foreground) = switch (status) {
+      BoardSyncStatus.idle => ('Live sync on', scheme.primaryContainer, scheme.onPrimaryContainer),
+      BoardSyncStatus.saving => ('Saving', scheme.secondaryContainer, scheme.onSecondaryContainer),
+      BoardSyncStatus.reloading => ('Reloading', scheme.secondaryContainer, scheme.onSecondaryContainer),
+      BoardSyncStatus.externalUpdate => ('Updated', const Color(0xFFF5E4D6), scheme.onSurface),
+      BoardSyncStatus.error => ('Sync error', scheme.errorContainer, scheme.onErrorContainer),
+    };
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Text(
+          label,
+          key: const ValueKey('sync-status-pill'),
+          style: TextStyle(
+            color: foreground,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -736,4 +809,3 @@ class _BoardDragData {
   final String recordId;
   final String originColumn;
 }
-

@@ -1,4 +1,5 @@
 ﻿import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -14,6 +15,8 @@ final boardControllerProvider =
   )..loadRecentFiles();
 });
 
+enum BoardSyncStatus { idle, saving, reloading, externalUpdate, error }
+
 class BoardState {
   const BoardState({
     this.document,
@@ -23,6 +26,9 @@ class BoardState {
     this.isLoading = false,
     this.isSaving = false,
     this.errorMessage,
+    this.syncStatus = BoardSyncStatus.idle,
+    this.syncMessage,
+    this.lastSeenFileFingerprint,
   });
 
   final BoardDocument? document;
@@ -32,6 +38,9 @@ class BoardState {
   final bool isLoading;
   final bool isSaving;
   final String? errorMessage;
+  final BoardSyncStatus syncStatus;
+  final String? syncMessage;
+  final String? lastSeenFileFingerprint;
 
   BoardState copyWith({
     BoardDocument? document,
@@ -44,6 +53,10 @@ class BoardState {
     bool? isSaving,
     String? errorMessage,
     bool clearError = false,
+    BoardSyncStatus? syncStatus,
+    String? syncMessage,
+    bool clearSyncMessage = false,
+    String? lastSeenFileFingerprint,
   }) {
     return BoardState(
       document: keepDocument ? (document ?? this.document) : document,
@@ -55,16 +68,37 @@ class BoardState {
       isLoading: isLoading ?? this.isLoading,
       isSaving: isSaving ?? this.isSaving,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+      syncStatus: syncStatus ?? this.syncStatus,
+      syncMessage: clearSyncMessage ? null : (syncMessage ?? this.syncMessage),
+      lastSeenFileFingerprint: lastSeenFileFingerprint ?? this.lastSeenFileFingerprint,
     );
   }
 }
 
 class BoardController extends StateNotifier<BoardState> {
-  BoardController(this._csvService, this._preferences)
-      : super(const BoardState());
+  BoardController(
+    this._csvService,
+    this._preferences, {
+    Duration reloadDebounce = const Duration(milliseconds: 450),
+  })  : _reloadDebounce = reloadDebounce,
+        super(const BoardState());
 
   final CsvDocumentService _csvService;
   final BoardPreferencesStore _preferences;
+  final Duration _reloadDebounce;
+
+  StreamSubscription<FileSystemEvent>? _watchSubscription;
+  Timer? _reloadTimer;
+  bool _saveInProgress = false;
+  BoardDocument? _queuedSaveDocument;
+  final Set<String> _selfSaveFingerprints = <String>{};
+
+  @override
+  void dispose() {
+    _reloadTimer?.cancel();
+    _watchSubscription?.cancel();
+    super.dispose();
+  }
 
   Future<void> loadRecentFiles() async {
     final files = await _preferences.loadRecentFiles();
@@ -72,38 +106,18 @@ class BoardController extends StateNotifier<BoardState> {
   }
 
   Future<void> openFile(String filePath) async {
+    _stopWatching();
     state = state.copyWith(
       isLoading: true,
       clearError: true,
       clearSelectedRecord: true,
+      clearSyncMessage: true,
+      syncStatus: BoardSyncStatus.reloading,
     );
 
     try {
       final document = await _csvService.openDocument(filePath);
-      final mapping = await _preferences.loadMapping(
-        filePath,
-        document.headerFingerprint,
-      );
-      final savedStatusOrder = await _preferences.loadStatusOrder(
-        filePath,
-        document.headerFingerprint,
-      );
-      final detectedMapping = CsvColumnMapping.autoDetect(document.headers);
-      final resolvedMapping =
-          mapping != null && mapping.isValidForHeaders(document.headers)
-              ? mapping
-              : detectedMapping;
-      final hydrated = document.copyWith(
-        mapping: resolvedMapping,
-        keepExistingMapping: false,
-        statusOrder: resolvedMapping == null
-            ? const []
-            : _csvService.deriveStatusOrder(
-                document.records,
-                resolvedMapping,
-                preferredOrder: savedStatusOrder ?? const [],
-              ),
-      );
+      final hydrated = await _hydrateOpenedDocument(document);
       await _preferences.saveRecentFile(filePath);
       final recentFiles = await _preferences.loadRecentFiles();
       state = state.copyWith(
@@ -111,11 +125,16 @@ class BoardController extends StateNotifier<BoardState> {
         recentFiles: recentFiles,
         filterQuery: '',
         isLoading: false,
+        syncStatus: BoardSyncStatus.idle,
+        lastSeenFileFingerprint: hydrated.fileFingerprint,
         clearError: true,
+        clearSyncMessage: true,
       );
+      _startWatching(filePath);
     } catch (error) {
       state = state.copyWith(
         isLoading: false,
+        syncStatus: BoardSyncStatus.error,
         errorMessage: error.toString(),
       );
     }
@@ -128,6 +147,7 @@ class BoardController extends StateNotifier<BoardState> {
     }
     if (!mapping.isValidForHeaders(document.headers)) {
       state = state.copyWith(
+        syncStatus: BoardSyncStatus.error,
         errorMessage: 'The mapping does not match the CSV headers.',
       );
       return;
@@ -156,7 +176,9 @@ class BoardController extends StateNotifier<BoardState> {
         keepExistingMapping: false,
         statusOrder: nextStatusOrder,
       ),
+      syncStatus: BoardSyncStatus.idle,
       clearError: true,
+      clearSyncMessage: true,
     );
   }
 
@@ -233,7 +255,12 @@ class BoardController extends StateNotifier<BoardState> {
     };
     final nextRecords = [
       ...document.records,
-      BoardRecord(id: recordId, sourceRowIndex: nextIndex, values: values),
+      BoardRecord(
+        id: recordId,
+        rowKey: recordId,
+        sourceRowIndex: nextIndex,
+        values: values,
+      ),
     ];
     final nextStatuses = _csvService.deriveStatusOrder(
       nextRecords,
@@ -241,17 +268,21 @@ class BoardController extends StateNotifier<BoardState> {
       preferredOrder: [...document.statusOrder, targetStatus],
     );
 
-    final nextDocument = document.copyWith(
-      records: nextRecords,
-      dirty: true,
-      clearLastSavedAt: true,
+    final nextDocument = _buildDirtyDocument(
+      document,
+      nextRecords,
       statusOrder: nextStatuses,
     );
     state = state.copyWith(
       document: nextDocument,
       selectedRecordId: recordId,
+      isSaving: true,
+      syncStatus: BoardSyncStatus.saving,
+      clearError: true,
+      clearSyncMessage: true,
     );
     _persistStatusOrder(nextDocument, nextStatuses);
+    _enqueueAutoSave(nextDocument);
     return recordId;
   }
 
@@ -272,12 +303,13 @@ class BoardController extends StateNotifier<BoardState> {
       mapping,
       preferredOrder: [...document.statusOrder, trimmed],
     );
-    final nextDocument = document.copyWith(
-      dirty: true,
-      clearLastSavedAt: true,
-      statusOrder: nextStatuses,
+    final nextDocument = document.copyWith(statusOrder: nextStatuses);
+    state = state.copyWith(
+      document: nextDocument,
+      syncStatus: BoardSyncStatus.idle,
+      clearError: true,
+      clearSyncMessage: true,
     );
-    state = state.copyWith(document: nextDocument);
     _persistStatusOrder(nextDocument, nextStatuses);
   }
 
@@ -315,14 +347,25 @@ class BoardController extends StateNotifier<BoardState> {
       ],
     );
 
-    final nextDocument = document.copyWith(
-      records: nextRecords,
-      dirty: true,
-      clearLastSavedAt: true,
-      statusOrder: nextStatuses,
+    final changedRows = document.records.where(
+      (record) => record.read(mapping.statusColumn).trim() == previousName,
     );
-    state = state.copyWith(document: nextDocument);
+    final hasRecordChanges = changedRows.isNotEmpty;
+    final nextDocument = hasRecordChanges
+        ? _buildDirtyDocument(document, nextRecords, statusOrder: nextStatuses)
+        : document.copyWith(statusOrder: nextStatuses);
+
+    state = state.copyWith(
+      document: nextDocument,
+      isSaving: hasRecordChanges,
+      syncStatus: hasRecordChanges ? BoardSyncStatus.saving : BoardSyncStatus.idle,
+      clearError: true,
+      clearSyncMessage: true,
+    );
     _persistStatusOrder(nextDocument, nextStatuses);
+    if (hasRecordChanges) {
+      _enqueueAutoSave(nextDocument);
+    }
   }
 
   void applyRecordValues(String recordId, Map<String, String> values) {
@@ -350,14 +393,20 @@ class BoardController extends StateNotifier<BoardState> {
       preferredOrder: document.statusOrder,
     );
 
-    final nextDocument = document.copyWith(
-      records: nextRecords,
-      dirty: true,
-      clearLastSavedAt: true,
+    final nextDocument = _buildDirtyDocument(
+      document,
+      nextRecords,
       statusOrder: nextStatuses,
     );
-    state = state.copyWith(document: nextDocument);
+    state = state.copyWith(
+      document: nextDocument,
+      isSaving: true,
+      syncStatus: BoardSyncStatus.saving,
+      clearError: true,
+      clearSyncMessage: true,
+    );
     _persistStatusOrder(nextDocument, nextStatuses);
+    _enqueueAutoSave(nextDocument);
   }
 
   void moveRecord(String recordId, String status) {
@@ -386,14 +435,20 @@ class BoardController extends StateNotifier<BoardState> {
       preferredOrder: [...document.statusOrder, trimmed],
     );
 
-    final nextDocument = document.copyWith(
-      records: nextRecords,
-      dirty: true,
-      clearLastSavedAt: true,
+    final nextDocument = _buildDirtyDocument(
+      document,
+      nextRecords,
       statusOrder: nextStatuses,
     );
-    state = state.copyWith(document: nextDocument);
+    state = state.copyWith(
+      document: nextDocument,
+      isSaving: true,
+      syncStatus: BoardSyncStatus.saving,
+      clearError: true,
+      clearSyncMessage: true,
+    );
     _persistStatusOrder(nextDocument, nextStatuses);
+    _enqueueAutoSave(nextDocument);
   }
 
   void moveColumn(String columnName, int delta) {
@@ -424,7 +479,12 @@ class BoardController extends StateNotifier<BoardState> {
     nextStatuses.insert(targetIndex, moved);
 
     final nextDocument = document.copyWith(statusOrder: nextStatuses);
-    state = state.copyWith(document: nextDocument);
+    state = state.copyWith(
+      document: nextDocument,
+      syncStatus: BoardSyncStatus.idle,
+      clearError: true,
+      clearSyncMessage: true,
+    );
     _persistStatusOrder(nextDocument, nextStatuses);
   }
 
@@ -446,35 +506,238 @@ class BoardController extends StateNotifier<BoardState> {
       return;
     }
 
-    state = state.copyWith(isSaving: true, clearError: true);
-    try {
-      await _csvService.saveDocument(document);
-      await _preferences.saveRecentFile(document.filePath);
-      final recentFiles = await _preferences.loadRecentFiles();
-      state = state.copyWith(
-        document: document.copyWith(
-          dirty: false,
-          lastSavedAt: DateTime.now(),
-        ),
-        recentFiles: recentFiles,
-        isSaving: false,
-      );
-    } catch (error) {
-      state = state.copyWith(
-        isSaving: false,
-        errorMessage: error.toString(),
-      );
-    }
+    state = state.copyWith(
+      isSaving: true,
+      syncStatus: BoardSyncStatus.saving,
+      clearError: true,
+      clearSyncMessage: true,
+    );
+    _enqueueAutoSave(document);
   }
 
   void clearError() {
     state = state.copyWith(clearError: true);
   }
 
+  void clearSyncMessage() {
+    state = state.copyWith(
+      clearSyncMessage: true,
+      syncStatus: state.syncStatus == BoardSyncStatus.externalUpdate
+          ? BoardSyncStatus.idle
+          : state.syncStatus,
+    );
+  }
+
   bool _matchesFilter(BoardRecord record, String filter) {
     return record.values.values.any(
       (value) => value.toLowerCase().contains(filter),
     );
+  }
+
+  Future<BoardDocument> _hydrateOpenedDocument(BoardDocument document) async {
+    final mapping = await _preferences.loadMapping(
+      document.filePath,
+      document.headerFingerprint,
+    );
+    final savedStatusOrder = await _preferences.loadStatusOrder(
+      document.filePath,
+      document.headerFingerprint,
+    );
+    final detectedMapping = CsvColumnMapping.autoDetect(document.headers);
+    final resolvedMapping =
+        mapping != null && mapping.isValidForHeaders(document.headers)
+            ? mapping
+            : detectedMapping;
+    final statusOrder = resolvedMapping == null
+        ? const <String>[]
+        : _csvService.deriveStatusOrder(
+            document.records,
+            resolvedMapping,
+            preferredOrder: savedStatusOrder ?? const [],
+          );
+
+    return document.copyWith(
+      mapping: resolvedMapping,
+      keepExistingMapping: false,
+      statusOrder: statusOrder,
+      dirty: false,
+    );
+  }
+
+  Future<void> _reloadFromWatcher() async {
+    final document = state.document;
+    if (document == null) {
+      return;
+    }
+
+    try {
+      final fingerprint = await _csvService.readFileFingerprintFromDisk(document.filePath);
+      if (_selfSaveFingerprints.remove(fingerprint)) {
+        state = state.copyWith(lastSeenFileFingerprint: fingerprint);
+        return;
+      }
+      if (fingerprint == document.fileFingerprint ||
+          fingerprint == state.lastSeenFileFingerprint) {
+        return;
+      }
+      await _reloadDocumentFromDisk(externalChange: true);
+    } catch (error) {
+      state = state.copyWith(
+        syncStatus: BoardSyncStatus.error,
+        errorMessage: error.toString(),
+      );
+    }
+  }
+
+  Future<void> _reloadDocumentFromDisk({required bool externalChange}) async {
+    final current = state.document;
+    if (current == null) {
+      return;
+    }
+
+    _queuedSaveDocument = null;
+    state = state.copyWith(
+      syncStatus: BoardSyncStatus.reloading,
+      isSaving: false,
+      clearError: true,
+    );
+
+    try {
+      final reloaded = await _csvService.reloadDocumentFromDisk(current.filePath);
+      final hydrated = await _hydrateReloadedDocument(reloaded, current);
+      final selectedRowKey = _selectedRowKey(current, state.selectedRecordId);
+      final selectedRecordId = _selectedRecordIdForRowKey(hydrated, selectedRowKey);
+      final headersChanged = current.headerFingerprint != hydrated.headerFingerprint;
+      final message = headersChanged && hydrated.mapping == null
+          ? 'CSV headers changed. Review the field mapping.'
+          : 'CSV updated from disk.';
+
+      state = state.copyWith(
+        document: hydrated,
+        selectedRecordId: selectedRecordId,
+        clearSelectedRecord: selectedRecordId == null,
+        isSaving: false,
+        syncStatus: externalChange ? BoardSyncStatus.externalUpdate : BoardSyncStatus.idle,
+        syncMessage: externalChange ? message : null,
+        lastSeenFileFingerprint: hydrated.fileFingerprint,
+        clearError: true,
+      );
+    } catch (error) {
+      state = state.copyWith(
+        syncStatus: BoardSyncStatus.error,
+        isSaving: false,
+        errorMessage: error.toString(),
+      );
+    }
+  }
+
+  Future<BoardDocument> _hydrateReloadedDocument(
+    BoardDocument reloaded,
+    BoardDocument previous,
+  ) async {
+    final savedMapping = await _preferences.loadMapping(
+      reloaded.filePath,
+      reloaded.headerFingerprint,
+    );
+    final savedStatusOrder = await _preferences.loadStatusOrder(
+      reloaded.filePath,
+      reloaded.headerFingerprint,
+    );
+
+    CsvColumnMapping? resolvedMapping;
+    if (previous.headerFingerprint == reloaded.headerFingerprint &&
+        previous.mapping != null &&
+        previous.mapping!.isValidForHeaders(reloaded.headers)) {
+      resolvedMapping = previous.mapping;
+    } else if (savedMapping != null && savedMapping.isValidForHeaders(reloaded.headers)) {
+      resolvedMapping = savedMapping;
+    } else if (previous.mapping != null && previous.mapping!.isValidForHeaders(reloaded.headers)) {
+      resolvedMapping = previous.mapping;
+      await _preferences.saveMapping(
+        reloaded.filePath,
+        reloaded.headerFingerprint,
+        resolvedMapping!,
+      );
+    }
+
+    final statusOrder = resolvedMapping == null
+        ? const <String>[]
+        : _csvService.deriveStatusOrder(
+            reloaded.records,
+            resolvedMapping,
+            preferredOrder: savedStatusOrder ?? previous.statusOrder,
+          );
+    if (resolvedMapping != null) {
+      await _preferences.saveStatusOrder(
+        reloaded.filePath,
+        reloaded.headerFingerprint,
+        statusOrder,
+      );
+    }
+
+    return reloaded.copyWith(
+      mapping: resolvedMapping,
+      keepExistingMapping: false,
+      statusOrder: statusOrder,
+      dirty: false,
+      lastSavedAt: previous.lastSavedAt,
+    );
+  }
+
+  BoardDocument _buildDirtyDocument(
+    BoardDocument document,
+    List<BoardRecord> nextRecords, {
+    required List<String> statusOrder,
+  }) {
+    final rekeyedRecords = _csvService.rekeyRecords(nextRecords, document.headers);
+    return document.copyWith(
+      records: rekeyedRecords,
+      dirty: true,
+      clearLastSavedAt: true,
+      statusOrder: statusOrder,
+    );
+  }
+
+  String? _selectedRowKey(BoardDocument document, String? recordId) {
+    if (recordId == null) {
+      return null;
+    }
+    for (final record in document.records) {
+      if (record.id == recordId) {
+        return record.rowKey;
+      }
+    }
+    return null;
+  }
+
+  String? _selectedRecordIdForRowKey(BoardDocument document, String? rowKey) {
+    if (rowKey == null) {
+      return null;
+    }
+    for (final record in document.records) {
+      if (record.rowKey == rowKey) {
+        return record.id;
+      }
+    }
+    return null;
+  }
+
+  void _startWatching(String filePath) {
+    _watchSubscription = _csvService.watchDocument(filePath).listen((_) {
+      _reloadTimer?.cancel();
+      _reloadTimer = Timer(_reloadDebounce, () {
+        unawaited(_reloadFromWatcher());
+      });
+    });
+  }
+
+  void _stopWatching() {
+    _reloadTimer?.cancel();
+    _reloadTimer = null;
+    _watchSubscription?.cancel();
+    _watchSubscription = null;
+    _queuedSaveDocument = null;
+    _selfSaveFingerprints.clear();
   }
 
   void _persistStatusOrder(BoardDocument document, List<String> statusOrder) {
@@ -485,6 +748,77 @@ class BoardController extends StateNotifier<BoardState> {
         statusOrder,
       ),
     );
+  }
+
+  void _enqueueAutoSave(BoardDocument document) {
+    _queuedSaveDocument = document;
+    if (_saveInProgress) {
+      return;
+    }
+    unawaited(_drainAutoSaveQueue());
+  }
+
+  Future<void> _drainAutoSaveQueue() async {
+    if (_saveInProgress) {
+      return;
+    }
+
+    _saveInProgress = true;
+    try {
+      while (_queuedSaveDocument != null) {
+        final document = _queuedSaveDocument!;
+        _queuedSaveDocument = null;
+
+        try {
+          final currentFingerprint = await _csvService.readFileFingerprintFromDisk(
+            document.filePath,
+          );
+          if (currentFingerprint != document.fileFingerprint &&
+              !_selfSaveFingerprints.contains(currentFingerprint)) {
+            await _reloadDocumentFromDisk(externalChange: true);
+            continue;
+          }
+        } catch (_) {
+          // Ignore preflight read failures and rely on save/reload handling below.
+        }
+
+        try {
+          final result = await _csvService.saveDocument(document);
+          _selfSaveFingerprints.add(result.fileFingerprint);
+
+          if (identical(state.document, document)) {
+            state = state.copyWith(
+              document: document.copyWith(
+                dirty: false,
+                lastSavedAt: result.savedAt,
+                fileFingerprint: result.fileFingerprint,
+              ),
+              isSaving: false,
+              syncStatus: BoardSyncStatus.idle,
+              lastSeenFileFingerprint: result.fileFingerprint,
+              clearError: true,
+            );
+          } else if (state.syncStatus == BoardSyncStatus.saving) {
+            state = state.copyWith(
+              isSaving: _queuedSaveDocument != null,
+              syncStatus:
+                  _queuedSaveDocument != null ? BoardSyncStatus.saving : BoardSyncStatus.idle,
+              clearError: true,
+            );
+          }
+        } catch (error) {
+          if (identical(state.document, document)) {
+            state = state.copyWith(
+              isSaving: false,
+              syncStatus: BoardSyncStatus.error,
+              errorMessage: error.toString(),
+            );
+          }
+        }
+      }
+    } finally {
+      _saveInProgress = false;
+    }
   }
 }
 

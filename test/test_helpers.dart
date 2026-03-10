@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+﻿import 'dart:async';
+import 'dart:io';
 
 import 'package:openboard/core/models/board_models.dart';
 import 'package:openboard/core/services/board_preferences_store.dart';
@@ -57,3 +58,17 @@ Future<File> writeTempCsv(String name, String contents) async {
   return file;
 }
 
+Future<void> waitForCondition(
+  FutureOr<bool> Function() predicate, {
+  Duration timeout = const Duration(seconds: 5),
+  Duration pollInterval = const Duration(milliseconds: 50),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (await predicate()) {
+      return;
+    }
+    await Future<void>.delayed(pollInterval);
+  }
+  throw TimeoutException('Timed out waiting for condition.');
+}

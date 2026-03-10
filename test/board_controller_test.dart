@@ -36,6 +36,7 @@ void main() {
         const CsvDocumentService(),
         MemoryBoardPreferencesStore(),
       );
+      addTearDown(controller.dispose);
 
       await controller.openFile(file.path);
 
@@ -44,7 +45,7 @@ void main() {
       expect(controller.state.document?.mapping?.statusColumn, 'Workflow State');
     });
 
-    test('maps, edits, moves, and saves board data', () async {
+    test('auto-saves board changes back to the CSV', () async {
       final file = await writeTempCsv(
         'controller.csv',
         'Title,Status,Description,Owner\n'
@@ -55,16 +56,14 @@ void main() {
 
       final preferences = MemoryBoardPreferencesStore();
       const service = CsvDocumentService();
-      final controller = BoardController(service, preferences);
-      const mapping = CsvColumnMapping(
-        titleColumn: 'Title',
-        statusColumn: 'Status',
-        descriptionColumn: 'Description',
-        extraVisibleColumns: ['Owner'],
+      final controller = BoardController(
+        service,
+        preferences,
+        reloadDebounce: const Duration(milliseconds: 75),
       );
+      addTearDown(controller.dispose);
 
       await controller.openFile(file.path);
-      await controller.applyMapping(mapping);
       controller.addColumn('Blocked');
 
       final newRecordId = controller.createCard(initialStatus: 'Blocked');
@@ -76,13 +75,16 @@ void main() {
       });
       controller.moveRecord('row_0', 'Done');
       controller.renameColumn('Blocked', 'Waiting');
-      await controller.saveDocument();
+
+      await waitForCondition(() {
+        final document = controller.state.document;
+        return !controller.state.isSaving && document != null && !document.dirty;
+      });
 
       final reopened = await service.openDocument(file.path);
       final titles = reopened.records.map((record) => record.read('Title')).toList();
 
       expect(controller.state.recentFiles.first, file.path);
-      expect(controller.state.document?.dirty, isFalse);
       expect(titles, contains('Task C'));
       expect(reopened.records.first.read('Status'), 'Done');
       expect(
@@ -104,6 +106,7 @@ void main() {
       final preferences = MemoryBoardPreferencesStore();
       const service = CsvDocumentService();
       final controller = BoardController(service, preferences);
+      addTearDown(controller.dispose);
 
       await controller.openFile(file.path);
 
@@ -121,11 +124,126 @@ void main() {
       );
 
       final reopenedController = BoardController(service, preferences);
+      addTearDown(reopenedController.dispose);
       await reopenedController.openFile(file.path);
 
       expect(
         reopenedController.buildColumns().map((column) => column.name).toList(),
         ['Done', 'Todo', 'In Progress'],
+      );
+    });
+
+    test('reloads external CSV changes and preserves selection and column order', () async {
+      final file = await writeTempCsv(
+        'external_update.csv',
+        'Title,Status\n'
+        'Task A,Todo\n'
+        'Task B,Done\n',
+      );
+      addTearDown(() => file.parent.delete(recursive: true));
+
+      final controller = BoardController(
+        const CsvDocumentService(),
+        MemoryBoardPreferencesStore(),
+        reloadDebounce: const Duration(milliseconds: 75),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.openFile(file.path);
+      controller.moveColumn('Done', -1);
+      controller.selectRecord('row_0');
+
+      await file.writeAsString(
+        'Title,Status\n'
+        'Task A,Todo\n'
+        'Task B,Done\n'
+        'Task C,Todo\n',
+      );
+
+      await waitForCondition(() {
+        return controller.state.document?.records.length == 3 &&
+            controller.state.syncStatus == BoardSyncStatus.externalUpdate;
+      });
+
+      expect(controller.state.selectedRecordId, 'row_0');
+      expect(
+        controller.buildColumns().map((column) => column.name).toList(),
+        ['Done', 'Todo'],
+      );
+      expect(
+        controller.state.document?.records.any((record) => record.read('Title') == 'Task C'),
+        isTrue,
+      );
+    });
+
+    test('invalidates mapping when external headers change', () async {
+      final file = await writeTempCsv(
+        'schema_drift.csv',
+        'Title,Status,Description\n'
+        'Task A,Todo,First\n',
+      );
+      addTearDown(() => file.parent.delete(recursive: true));
+
+      final controller = BoardController(
+        const CsvDocumentService(),
+        MemoryBoardPreferencesStore(),
+        reloadDebounce: const Duration(milliseconds: 75),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.openFile(file.path);
+      final originalFingerprint = controller.state.document?.headerFingerprint;
+
+      await file.writeAsString(
+        'Task,Stage,Notes\n'
+        'Task A,Todo,First\n',
+      );
+
+      await waitForCondition(() {
+        final document = controller.state.document;
+        return document != null &&
+            document.headerFingerprint != originalFingerprint &&
+            document.mapping == null;
+      });
+
+      expect(controller.state.syncStatus, BoardSyncStatus.externalUpdate);
+      expect(
+        controller.state.syncMessage,
+        contains('Review the field mapping'),
+      );
+    });
+
+    test('stops reacting to the old file after switching to a new one', () async {
+      final firstFile = await writeTempCsv(
+        'first.csv',
+        'Title,Status\nTask A,Todo\n',
+      );
+      final secondFile = await writeTempCsv(
+        'second.csv',
+        'Title,Status\nTask B,Done\n',
+      );
+      addTearDown(() => firstFile.parent.delete(recursive: true));
+      addTearDown(() => secondFile.parent.delete(recursive: true));
+
+      final controller = BoardController(
+        const CsvDocumentService(),
+        MemoryBoardPreferencesStore(),
+        reloadDebounce: const Duration(milliseconds: 75),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.openFile(firstFile.path);
+      await controller.openFile(secondFile.path);
+
+      await firstFile.writeAsString(
+        'Title,Status\nTask A,Done\nTask C,Todo\n',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(controller.state.document?.filePath, secondFile.path);
+      expect(
+        controller.state.document?.records.map((record) => record.read('Title')).toList(),
+        ['Task B'],
       );
     });
   });

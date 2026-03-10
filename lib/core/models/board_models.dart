@@ -207,11 +207,13 @@
 class BoardRecord {
   BoardRecord({
     required this.id,
+    required this.rowKey,
     required this.sourceRowIndex,
     required Map<String, String> values,
   }) : values = Map<String, String>.unmodifiable(values);
 
   final String id;
+  final String rowKey;
   final int sourceRowIndex;
   final Map<String, String> values;
 
@@ -219,11 +221,13 @@ class BoardRecord {
 
   BoardRecord copyWith({
     String? id,
+    String? rowKey,
     int? sourceRowIndex,
     Map<String, String>? values,
   }) {
     return BoardRecord(
       id: id ?? this.id,
+      rowKey: rowKey ?? this.rowKey,
       sourceRowIndex: sourceRowIndex ?? this.sourceRowIndex,
       values: values ?? this.values,
     );
@@ -240,6 +244,7 @@ class BoardColumn {
 class BoardDocument {
   const BoardDocument({
     required this.filePath,
+    required this.fileFingerprint,
     required this.headers,
     required this.records,
     required this.headerFingerprint,
@@ -250,6 +255,7 @@ class BoardDocument {
   });
 
   final String filePath;
+  final String fileFingerprint;
   final List<String> headers;
   final List<BoardRecord> records;
   final String headerFingerprint;
@@ -264,6 +270,7 @@ class BoardDocument {
   }
 
   BoardDocument copyWith({
+    String? fileFingerprint,
     List<String>? headers,
     List<BoardRecord>? records,
     CsvColumnMapping? mapping,
@@ -275,6 +282,7 @@ class BoardDocument {
   }) {
     return BoardDocument(
       filePath: filePath,
+      fileFingerprint: fileFingerprint ?? this.fileFingerprint,
       headers: headers ?? this.headers,
       records: records ?? this.records,
       headerFingerprint: headerFingerprint,
