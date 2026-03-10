@@ -133,6 +133,50 @@ void main() {
       );
     });
 
+    test('sorts cards within columns by title and due date', () async {
+      final file = await writeTempCsv(
+        'card_sort.csv',
+        'Title,Status,Deadline\n'
+        'Bravo,Todo,04/15/2026\n'
+        'Alpha,Todo,03/01/2026\n'
+        'Charlie,Todo,\n',
+      );
+      addTearDown(() => file.parent.delete(recursive: true));
+
+      final controller = BoardController(
+        const CsvDocumentService(),
+        MemoryBoardPreferencesStore(),
+      );
+      addTearDown(controller.dispose);
+
+      await controller.openFile(file.path);
+      await controller.applyMapping(
+        const CsvColumnMapping(
+          titleColumn: 'Title',
+          statusColumn: 'Status',
+          dueDateColumn: 'Deadline',
+        ),
+      );
+
+      controller.setSortMode(BoardCardSort.titleAscending);
+      expect(
+        controller.buildColumns().single.records.map((record) => record.read('Title')).toList(),
+        ['Alpha', 'Bravo', 'Charlie'],
+      );
+
+      controller.setSortMode(BoardCardSort.dueDateAscending);
+      expect(
+        controller.buildColumns().single.records.map((record) => record.read('Title')).toList(),
+        ['Alpha', 'Bravo', 'Charlie'],
+      );
+
+      controller.setSortMode(BoardCardSort.titleDescending);
+      expect(
+        controller.buildColumns().single.records.map((record) => record.read('Title')).toList(),
+        ['Charlie', 'Bravo', 'Alpha'],
+      );
+    });
+
     test('reloads external CSV changes and preserves selection and column order', () async {
       final file = await writeTempCsv(
         'external_update.csv',
@@ -248,4 +292,6 @@ void main() {
     });
   });
 }
+
+
 

@@ -225,6 +225,36 @@ class _BoardPageState extends ConsumerState<BoardPage> {
                 ),
               ),
               const SizedBox(width: 16),
+              PopupMenuButton<BoardCardSort>(
+                initialValue: state.sortMode,
+                onSelected: controller.setSortMode,
+                itemBuilder: (context) => [
+                  for (final sortMode in BoardCardSort.values)
+                    PopupMenuItem(
+                      value: sortMode,
+                      child: Text(_sortModeLabel(sortMode)),
+                    ),
+                ],
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                    borderRadius: BorderRadius.circular(18),
+                    color: Colors.white,
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.sort_outlined, size: 18),
+                        const SizedBox(width: 8),
+                        Text(_sortModeLabel(state.sortMode)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
               OutlinedButton.icon(
                 onPressed: _addColumn,
                 icon: const Icon(Icons.view_column_outlined),
@@ -440,6 +470,21 @@ class _BoardPageState extends ConsumerState<BoardPage> {
         return 'The CSV changed outside OpenBoard.';
       case BoardSyncStatus.error:
         return 'Live sync hit an error. Retry save or wait for the next file update.';
+    }
+  }
+
+  String _sortModeLabel(BoardCardSort sortMode) {
+    switch (sortMode) {
+      case BoardCardSort.manual:
+        return 'Original order';
+      case BoardCardSort.titleAscending:
+        return 'Title A-Z';
+      case BoardCardSort.titleDescending:
+        return 'Title Z-A';
+      case BoardCardSort.dueDateAscending:
+        return 'Due date earliest';
+      case BoardCardSort.dueDateDescending:
+        return 'Due date latest';
     }
   }
 }
@@ -809,3 +854,5 @@ class _BoardDragData {
   final String recordId;
   final String originColumn;
 }
+
+

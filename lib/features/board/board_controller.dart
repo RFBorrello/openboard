@@ -17,6 +17,14 @@ final boardControllerProvider =
 
 enum BoardSyncStatus { idle, saving, reloading, externalUpdate, error }
 
+enum BoardCardSort {
+  manual,
+  titleAscending,
+  titleDescending,
+  dueDateAscending,
+  dueDateDescending,
+}
+
 class BoardState {
   const BoardState({
     this.document,
@@ -29,6 +37,7 @@ class BoardState {
     this.syncStatus = BoardSyncStatus.idle,
     this.syncMessage,
     this.lastSeenFileFingerprint,
+    this.sortMode = BoardCardSort.manual,
   });
 
   final BoardDocument? document;
@@ -41,6 +50,7 @@ class BoardState {
   final BoardSyncStatus syncStatus;
   final String? syncMessage;
   final String? lastSeenFileFingerprint;
+  final BoardCardSort sortMode;
 
   BoardState copyWith({
     BoardDocument? document,
@@ -57,6 +67,7 @@ class BoardState {
     String? syncMessage,
     bool clearSyncMessage = false,
     String? lastSeenFileFingerprint,
+    BoardCardSort? sortMode,
   }) {
     return BoardState(
       document: keepDocument ? (document ?? this.document) : document,
@@ -71,6 +82,7 @@ class BoardState {
       syncStatus: syncStatus ?? this.syncStatus,
       syncMessage: clearSyncMessage ? null : (syncMessage ?? this.syncMessage),
       lastSeenFileFingerprint: lastSeenFileFingerprint ?? this.lastSeenFileFingerprint,
+      sortMode: sortMode ?? this.sortMode,
     );
   }
 }
@@ -218,10 +230,7 @@ class BoardController extends StateNotifier<BoardState> {
           (entry) => BoardColumn(
             name: entry.key,
             records: [...entry.value]
-              ..sort(
-                (left, right) =>
-                    left.sourceRowIndex.compareTo(right.sourceRowIndex),
-              ),
+              ..sort((left, right) => _compareRecords(left, right, mapping)),
           ),
         )
         .toList(growable: false);
@@ -499,6 +508,10 @@ class BoardController extends StateNotifier<BoardState> {
     state = state.copyWith(filterQuery: query);
   }
 
+  void setSortMode(BoardCardSort sortMode) {
+    state = state.copyWith(sortMode: sortMode);
+  }
+
   Future<void> saveDocument() async {
     final document = state.document;
     final mapping = document?.mapping;
@@ -531,6 +544,119 @@ class BoardController extends StateNotifier<BoardState> {
   bool _matchesFilter(BoardRecord record, String filter) {
     return record.values.values.any(
       (value) => value.toLowerCase().contains(filter),
+    );
+  }
+
+  int _compareRecords(
+    BoardRecord left,
+    BoardRecord right,
+    CsvColumnMapping mapping,
+  ) {
+    switch (state.sortMode) {
+      case BoardCardSort.manual:
+        return left.sourceRowIndex.compareTo(right.sourceRowIndex);
+      case BoardCardSort.titleAscending:
+        return _compareStrings(
+          left.read(mapping.titleColumn),
+          right.read(mapping.titleColumn),
+          fallback: left.sourceRowIndex.compareTo(right.sourceRowIndex),
+        );
+      case BoardCardSort.titleDescending:
+        return _compareStrings(
+          right.read(mapping.titleColumn),
+          left.read(mapping.titleColumn),
+          fallback: left.sourceRowIndex.compareTo(right.sourceRowIndex),
+        );
+      case BoardCardSort.dueDateAscending:
+        return _compareDueDates(left, right, mapping, ascending: true);
+      case BoardCardSort.dueDateDescending:
+        return _compareDueDates(left, right, mapping, ascending: false);
+    }
+  }
+
+  int _compareDueDates(
+    BoardRecord left,
+    BoardRecord right,
+    CsvColumnMapping mapping, {
+    required bool ascending,
+  }) {
+    final dueDateColumn = mapping.dueDateColumn;
+    if (dueDateColumn == null) {
+      return left.sourceRowIndex.compareTo(right.sourceRowIndex);
+    }
+
+    final leftDate = _parseSortableDate(left.read(dueDateColumn));
+    final rightDate = _parseSortableDate(right.read(dueDateColumn));
+    if (leftDate == null && rightDate == null) {
+      return _compareStrings(
+        left.read(mapping.titleColumn),
+        right.read(mapping.titleColumn),
+        fallback: left.sourceRowIndex.compareTo(right.sourceRowIndex),
+      );
+    }
+    if (leftDate == null) {
+      return 1;
+    }
+    if (rightDate == null) {
+      return -1;
+    }
+
+    final comparison = leftDate.compareTo(rightDate);
+    if (comparison != 0) {
+      return ascending ? comparison : -comparison;
+    }
+
+    return _compareStrings(
+      left.read(mapping.titleColumn),
+      right.read(mapping.titleColumn),
+      fallback: left.sourceRowIndex.compareTo(right.sourceRowIndex),
+    );
+  }
+
+  int _compareStrings(String left, String right, {required int fallback}) {
+    final normalizedLeft = left.trim().toLowerCase();
+    final normalizedRight = right.trim().toLowerCase();
+    if (normalizedLeft.isEmpty && normalizedRight.isEmpty) {
+      return fallback;
+    }
+    if (normalizedLeft.isEmpty) {
+      return 1;
+    }
+    if (normalizedRight.isEmpty) {
+      return -1;
+    }
+    final comparison = normalizedLeft.compareTo(normalizedRight);
+    return comparison == 0 ? fallback : comparison;
+  }
+
+  DateTime? _parseSortableDate(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+
+    final parsed = DateTime.tryParse(trimmed);
+    if (parsed != null) {
+      return parsed;
+    }
+
+    final match = RegExp(r'^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$').firstMatch(trimmed);
+    if (match == null) {
+      return null;
+    }
+
+    final month = int.tryParse(match.group(1)!);
+    final day = int.tryParse(match.group(2)!);
+    var year = int.tryParse(match.group(3)!);
+    if (month == null || day == null || year == null) {
+      return null;
+    }
+    if (year < 100) {
+      year += 2000;
+    }
+
+    return DateTime.tryParse(
+      '${year.toString().padLeft(4, '0')}-${month.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}',
     );
   }
 
@@ -821,4 +947,7 @@ class BoardController extends StateNotifier<BoardState> {
     }
   }
 }
+
+
+
 
